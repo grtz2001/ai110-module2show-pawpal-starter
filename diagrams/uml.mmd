@@ -1,15 +1,78 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
+    %% PawPal+ class diagram
     %% Keep this file updated so it matches your final implementation.
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    %% Owner: the person using the app; owns pets and can share calendars
+    class Owner {
+        +str name
+        +str email
+        +list~Pet~ pets
+        +dict preferences
+        +add_pet(pet) None
+        +share_calendar(calendar, person) None
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    %% Pet: the animal being cared for; holds its info, tasks, and calendar
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +float weight
+        +str notes
+        +edit_info(name, breed, weight, notes) None
+        +add_task(task) None
+        +get_calendar() Calendar
     }
 
-    ClassName --> AnotherClass : relationship
+    %% CareTask: a recurring chore (walk, feeding) with no fixed time; the Scheduler places it
+    class CareTask {
+        +str title
+        +int duration_minutes
+        +str priority
+        +str recurring
+        +bool done
+        +mark_done() None
+        +edit(title, duration_minutes, priority) None
+    }
+
+    %% Appointment: a one-time event locked to a date/time (vet visit); the Scheduler plans around it
+    class Appointment {
+        +str title
+        +date date
+        +time start_time
+        +int duration_minutes
+        +str location
+        +reschedule(new_time) None
+        +cancel() None
+    }
+
+    %% Calendar: storage; holds a pet's appointments and who it's shared with
+    class Calendar {
+        +Pet pet
+        +list~Appointment~ events
+        +list~Person~ shared_with
+        +add_event(event) None
+        +remove_event(event) None
+        +share(person) None
+        +get_events_for_day(day) list~Appointment~
+    }
+
+    %% Scheduler: the brain; builds and explains the daily plan around fixed appointments
+    class Scheduler {
+        +int available_minutes
+        +list~CareTask~ tasks
+        +Calendar calendar
+        +generate_daily_plan() list~CareTask~
+        +sort_by_priority() list~CareTask~
+        +check_conflicts(day) list~Appointment~
+        +explain_plan() str
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "1" Calendar : has
+    Calendar "1" --> "*" Appointment : contains
+    Pet "1" --> "*" CareTask : needs
+    Scheduler "1" --> "*" CareTask : plans
+    Scheduler "1" --> "1" Calendar : reads to avoid conflicts
+    Owner "1" --> "*" Owner : shares_with

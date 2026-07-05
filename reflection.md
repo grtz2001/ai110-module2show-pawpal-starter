@@ -1,6 +1,11 @@
 # PawPal+ Project Reflection
 
 ## 1. System Design
+**Three core actions**
+1. Add an appointment/event to a pet's calendar
+2. Edit information about a pet
+3. Share calendar with family/friends
+
 
 **a. Initial design**
 
