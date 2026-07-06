@@ -11,8 +11,14 @@ classDiagram
         +bool completed
         +int duration_minutes
         +str priority
-        +mark_complete() None
-        +edit(description, time, frequency, duration_minutes, priority) None
+        +int due_weekday
+        +time earliest
+        +time latest
+        +set completed_on
+        +mark_complete(day) None
+        +is_due_on(day) bool
+        +is_done_on(day) bool
+        +edit(description, time, frequency, duration_minutes, priority, due_weekday, earliest, latest) None
     }
 
     %% Pet: pet details plus the list of tasks it needs.
@@ -46,6 +52,11 @@ classDiagram
         +Owner owner
         +int available_minutes
         +sort_by_priority() list~Task~
+        +sort_by_time() list~Task~
+        +tasks_for_pet(pet) list~Task~
+        +filter_by_status(completed, day) list~Task~
+        +tasks_due_on(day) list~Task~
+        +detect_conflicts(day) list
         +generate_daily_plan(day) list~PlannedItem~
         +explain_plan() str
     }

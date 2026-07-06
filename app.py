@@ -1,4 +1,8 @@
+from datetime import date, time
+
 import streamlit as st
+
+from pawpal_system import Task, Pet, Owner, Scheduler
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -38,16 +42,53 @@ At minimum, your system should:
 
 st.divider()
 
-st.subheader("Quick Demo Inputs (UI only)")
+st.subheader("Owner")
 owner_name = st.text_input("Owner name", value="Jordan")
-pet_name = st.text_input("Pet name", value="Mochi")
-species = st.selectbox("Species", ["dog", "cat", "other"])
+owner_email = st.text_input("Owner email", value="jordan@example.com")
+
+# --- Persist the Owner in the session "vault" -------------------------------
+# Build the Owner exactly once and reuse it on every rerun so pets and tasks
+# added earlier are not wiped out.
+if "owner" not in st.session_state:
+    st.session_state.owner = Owner(name=owner_name, email=owner_email)
+
+owner = st.session_state.owner
+
+# Keep the persisted Owner in sync with the input widgets.
+owner.name = owner_name
+owner.email = owner_email
+
+# --- Adding a Pet -----------------------------------------------------------
+st.markdown("### Add a Pet")
+st.caption("Each pet you add is attached to the Owner via owner.add_pet(...).")
+
+pcol1, pcol2, pcol3 = st.columns(3)
+with pcol1:
+    new_pet_name = st.text_input("Pet name", value="Mochi")
+with pcol2:
+    new_pet_species = st.selectbox("Species", ["dog", "cat", "other"])
+with pcol3:
+    new_pet_breed = st.text_input("Breed", value="")
+
+if st.button("Add pet"):
+    owner.add_pet(
+        Pet(name=new_pet_name, species=new_pet_species, breed=new_pet_breed)
+    )
+
+if not owner.pets:
+    st.info("No pets yet. Add one above to start scheduling tasks.")
+    st.stop()
 
 st.markdown("### Tasks")
-st.caption("Add a few tasks. In your final version, these should feed into your scheduler.")
+st.caption("Pick a pet, then add tasks. These feed directly into your Scheduler below.")
 
-if "tasks" not in st.session_state:
-    st.session_state.tasks = []
+# Choose which pet the new task attaches to (by index, so duplicate names are safe).
+pet_index = st.selectbox(
+    "Add tasks for",
+    range(len(owner.pets)),
+    format_func=lambda i: f"{owner.pets[i].name} ({owner.pets[i].species})",
+)
+pet = owner.pets[pet_index]
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -57,32 +98,105 @@ with col2:
 with col3:
     priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
 
+# How often the task recurs. Weekly tasks only show up on their chosen weekday.
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+fcol1, fcol2 = st.columns(2)
+with fcol1:
+    frequency = st.selectbox("Frequency", ["daily", "weekly"])
+with fcol2:
+    due_weekday = None
+    if frequency == "weekly":
+        due_weekday = st.selectbox(
+            "On which day?", range(7), format_func=lambda i: WEEKDAYS[i]
+        )
+
+# Optional time-of-day window for this (flexible) task.
+use_window = st.checkbox("Only schedule within a time window")
+earliest = latest = None
+if use_window:
+    wcol1, wcol2 = st.columns(2)
+    with wcol1:
+        earliest = st.time_input("Earliest", value=time(8, 0))
+    with wcol2:
+        latest = st.time_input("Latest (finish by)", value=time(20, 0))
+
 if st.button("Add task"):
-    st.session_state.tasks.append(
-        {"title": task_title, "duration_minutes": int(duration), "priority": priority}
+    pet.add_task(
+        Task(
+            description=task_title,
+            duration_minutes=int(duration),
+            priority=priority,
+            frequency=frequency,
+            due_weekday=due_weekday,
+            earliest=earliest,
+            latest=latest,
+        )
     )
 
-if st.session_state.tasks:
-    st.write("Current tasks:")
-    st.table(st.session_state.tasks)
+tasks = pet.get_tasks()
+if tasks:
+    st.write(f"Current tasks for {pet.name}:")
+    st.table(
+        [
+            {
+                "title": t.description,
+                "duration_minutes": t.duration_minutes,
+                "priority": t.priority,
+                "frequency": (
+                    f"weekly ({WEEKDAYS[t.due_weekday]})"
+                    if t.frequency == "weekly" and t.due_weekday is not None
+                    else t.frequency
+                ),
+                "window": (
+                    f"{t.earliest.strftime('%H:%M')}–{t.latest.strftime('%H:%M')}"
+                    if t.earliest and t.latest
+                    else "any"
+                ),
+                "completed": t.completed,
+            }
+            for t in tasks
+        ]
+    )
 else:
-    st.info("No tasks yet. Add one above.")
+    st.info(f"No tasks yet for {pet.name}. Add one above.")
 
 st.divider()
 
 st.subheader("Build Schedule")
-st.caption("This button should call your scheduling logic once you implement it.")
+st.caption("Calls your Scheduler on the persisted Owner.")
+
+available_minutes = st.number_input(
+    "Daily care time available (minutes)", min_value=1, max_value=1440, value=120
+)
 
 if st.button("Generate schedule"):
-    st.warning(
-        "Not implemented yet. Next step: create your scheduling logic (classes/functions) and call it here."
-    )
-    st.markdown(
-        """
-Suggested approach:
-1. Design your UML (draft).
-2. Create class stubs (no logic).
-3. Implement scheduling behavior.
-4. Connect your scheduler here and display results.
-"""
-    )
+    scheduler = Scheduler(owner, available_minutes=int(available_minutes))
+    today = date.today()
+    plan = scheduler.generate_daily_plan(today)
+
+    # Flag any overlapping fixed-time commitments before showing the plan.
+    conflicts = scheduler.detect_conflicts(today)
+    for earlier, later in conflicts:
+        st.warning(
+            f"⚠️ Time conflict: “{earlier.description}” "
+            f"({earlier.time.strftime('%H:%M')}) overlaps "
+            f"“{later.description}” ({later.time.strftime('%H:%M')})."
+        )
+
+    if plan:
+        st.write("Planned day:")
+        st.table(
+            [
+                {
+                    "time": item.start_time.strftime("%H:%M"),
+                    "pet": item.pet.name,
+                    "task": item.task.description,
+                    "duration_minutes": item.task.duration_minutes,
+                    "priority": item.task.priority,
+                }
+                for item in plan
+            ]
+        )
+    else:
+        st.info("No tasks could be scheduled in the available time.")
+    st.text(scheduler.explain_plan())

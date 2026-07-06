@@ -66,13 +66,45 @@ class Task:
     description: str
     time: time = None          # fixed time of day, or None for a flexible task
     frequency: str = "daily"   # "daily" | "weekly"
-    completed: bool = False
+    completed: bool = False     # True = permanently done (e.g. a one-off errand)
     duration_minutes: int = 15
     priority: str = "medium"   # "low" | "medium" | "high"
+    # For weekly tasks: which weekday it recurs on (0 = Monday .. 6 = Sunday,
+    # matching date.weekday()). None means "any day" (falls back to daily-like).
+    due_weekday: int = None
+    # Optional time-of-day window for a flexible task: the Scheduler will only
+    # place it at or after ``earliest`` and finishing by ``latest``.
+    earliest: time = None
+    latest: time = None
+    # Dates this task has been completed on. Recurring tasks reset each day
+    # because a new day is simply a date not yet in this set.
+    completed_on: set = field(default_factory=set)
 
-    def mark_complete(self) -> None:
-        """Mark this task as done."""
-        self.completed = True
+    def mark_complete(self, day=None) -> None:
+        """Mark this task as done.
+
+        With no ``day`` it is marked *permanently* done (for one-off tasks).
+        With a ``day`` it is marked done for that date only, so a daily or
+        weekly task becomes due again on the next occurrence.
+        """
+        if day is None:
+            self.completed = True
+        else:
+            self.completed_on.add(day)
+
+    def is_due_on(self, day: date) -> bool:
+        """Whether this task should appear on ``day``, based on its frequency."""
+        if self.frequency == "weekly":
+            return self.due_weekday is None or day.weekday() == self.due_weekday
+        return True  # daily (the default) is due every day
+
+    def is_done_on(self, day: date) -> bool:
+        """Whether this task is already completed for ``day``.
+
+        A permanently completed task counts as done every day; otherwise
+        completion is tracked per-date so recurring tasks reset automatically.
+        """
+        return self.completed or day in self.completed_on
 
     def edit(
         self,
@@ -81,6 +113,9 @@ class Task:
         frequency=None,
         duration_minutes=None,
         priority=None,
+        due_weekday=None,
+        earliest=None,
+        latest=None,
     ) -> None:
         """Update this task's details. Only the fields you pass are changed."""
         if description is not None:
@@ -93,6 +128,12 @@ class Task:
             self.duration_minutes = duration_minutes
         if priority is not None:
             self.priority = priority
+        if due_weekday is not None:
+            self.due_weekday = due_weekday
+        if earliest is not None:
+            self.earliest = earliest
+        if latest is not None:
+            self.latest = latest
 
 
 @dataclass
@@ -179,6 +220,10 @@ class Scheduler:
         self.last_day = None
         self.last_plan = []
 
+    def _pet_by_task(self) -> dict:
+        """Map each task's identity to the pet that owns it (for labelling)."""
+        return {id(task): pet for pet in self.owner.pets for task in pet.tasks}
+
     def sort_by_priority(self) -> list:
         """Return every task across all pets, ordered high -> low priority.
 
@@ -189,6 +234,71 @@ class Scheduler:
             key=lambda task: PRIORITY_RANK.get(task.priority, len(PRIORITY_RANK)),
         )
 
+    def sort_by_time(self) -> list:
+        """Return every task ordered by its fixed time of day.
+
+        Flexible tasks (``time is None``) have no fixed slot, so they sort after
+        all anchored tasks. Anchored tasks are ordered earliest-first.
+        """
+        return sorted(
+            self.owner.get_all_tasks(),
+            key=lambda task: (task.time is None, _minutes(task.time) if task.time else 0),
+        )
+
+    def tasks_for_pet(self, pet: Pet) -> list:
+        """Return just the tasks belonging to ``pet`` (filter by pet)."""
+        return list(pet.tasks)
+
+    def filter_by_status(self, completed: bool, day: date = None) -> list:
+        """Return tasks across all pets matching a completion status.
+
+        Without ``day`` this uses the permanent ``completed`` flag; with a
+        ``day`` it uses that day's status, so recurring tasks are judged per-day.
+        """
+        def is_done(task):
+            return task.is_done_on(day) if day is not None else task.completed
+
+        return [task for task in self.owner.get_all_tasks() if is_done(task) == completed]
+
+    def tasks_due_on(self, day: date) -> list:
+        """Return the still-to-do tasks that should happen on ``day``.
+
+        Recurring-aware: honours each task's frequency and per-day completion.
+        """
+        return [
+            task
+            for task in self.owner.get_all_tasks()
+            if task.is_due_on(day) and not task.is_done_on(day)
+        ]
+
+    def detect_conflicts(self, day: date = None) -> list:
+        """Find pairs of fixed-time tasks whose time slots overlap.
+
+        Only anchored tasks (those with a fixed ``time``) can conflict — flexible
+        tasks are placed into free gaps and never overlap. When ``day`` is given,
+        only tasks due (and not yet done) on that day are considered.
+
+        Returns a list of ``(task_a, task_b)`` pairs, earliest task first.
+        """
+        anchored = [task for task in self.owner.get_all_tasks() if task.time is not None]
+        if day is not None:
+            anchored = [
+                task
+                for task in anchored
+                if task.is_due_on(day) and not task.is_done_on(day)
+            ]
+        anchored.sort(key=lambda task: task.time)
+
+        conflicts = []
+        for i, earlier in enumerate(anchored):
+            earlier_end = _minutes(earlier.time) + earlier.duration_minutes
+            for later in anchored[i + 1:]:
+                if _minutes(later.time) < earlier_end:
+                    conflicts.append((earlier, later))  # later starts before earlier ends
+                else:
+                    break  # sorted by time, so no further task can overlap `earlier`
+        return conflicts
+
     def generate_daily_plan(self, day: date) -> list:
         """Build a timed plan across all pets for the given day.
 
@@ -197,14 +307,21 @@ class Scheduler:
            and block that slot on the timeline.
         2. Flexible tasks (``time is None``) are then placed highest-priority-first
            into the earliest free slot that fits, until the time budget runs out.
-        Completed tasks are skipped. Returns a list of PlannedItem, time-ordered.
+        Tasks not due on ``day`` (e.g. a weekly task on the wrong weekday) and
+        tasks already completed for ``day`` are skipped. Each flexible task is
+        kept within its optional ``earliest``/``latest`` time window.
+        Returns a list of PlannedItem, time-ordered.
         """
         self.last_day = day
 
         # Which pet does each task belong to? (used to label the plan)
-        pet_of = {id(task): pet for pet in self.owner.pets for task in pet.tasks}
+        pet_of = self._pet_by_task()
 
-        active = [task for task in self.sort_by_priority() if not task.completed]
+        active = [
+            task
+            for task in self.sort_by_priority()
+            if task.is_due_on(day) and not task.is_done_on(day)
+        ]
         anchored = [task for task in active if task.time is not None]
         flexible = [task for task in active if task.time is None]
 
@@ -218,17 +335,26 @@ class Scheduler:
             blocked.append((start, start + task.duration_minutes))
 
         # 2. Flexible tasks fill the gaps, within the remaining time budget.
-        cursor = _minutes(DAY_START)
+        # We scan from the start of the day for each task (rather than a moving
+        # cursor) so a task with a late time window doesn't push earlier tasks
+        # later, and gaps left by windowed tasks can still be backfilled.
         remaining = self.available_minutes - sum(t.duration_minutes for t in anchored)
         for task in flexible:
             if remaining < task.duration_minutes:
                 continue  # no budget left for this one
-            start = _next_free_slot(cursor, task.duration_minutes, blocked)
-            if start + task.duration_minutes > _minutes(DAY_END):
-                continue  # would spill past the end of the day — skip it
+            # Lower bound: day start, or the task's earliest time if it has one.
+            lower = _minutes(DAY_START)
+            if task.earliest is not None:
+                lower = max(lower, _minutes(task.earliest))
+            # Upper bound: end of day, or the task's latest time if it has one.
+            upper = _minutes(DAY_END)
+            if task.latest is not None:
+                upper = min(upper, _minutes(task.latest))
+            start = _next_free_slot(lower, task.duration_minutes, blocked)
+            if start + task.duration_minutes > upper:
+                continue  # can't fit before the day (or its window) ends — skip
             plan.append(PlannedItem(task=task, pet=pet_of[id(task)], start_time=_clock(start)))
             blocked.append((start, start + task.duration_minutes))
-            cursor = start + task.duration_minutes
             remaining -= task.duration_minutes
 
         plan.sort(key=lambda item: item.start_time)  # readable timeline order
@@ -272,7 +398,9 @@ class Scheduler:
             (pet, task)
             for pet in self.owner.pets
             for task in pet.tasks
-            if not task.completed and id(task) not in planned_ids
+            if task.is_due_on(self.last_day)
+            and not task.is_done_on(self.last_day)
+            and id(task) not in planned_ids
         ]
         if skipped:
             lines.append("Left out (ran out of time or no free slot):")
@@ -280,6 +408,19 @@ class Scheduler:
                 lines.append(
                     f"  - [{pet.name}] {task.description} "
                     f"({task.duration_minutes} min, {task.priority} priority)"
+                )
+
+        # Warn about fixed-time tasks that overlap — both were placed anyway.
+        conflicts = self.detect_conflicts(self.last_day)
+        if conflicts:
+            pet_of = self._pet_by_task()
+            lines.append("Time conflicts (fixed-time tasks that overlap):")
+            for earlier, later in conflicts:
+                lines.append(
+                    f"  - [{pet_of[id(earlier)].name}] {earlier.description} "
+                    f"({earlier.time.strftime('%H:%M')}) overlaps "
+                    f"[{pet_of[id(later)].name}] {later.description} "
+                    f"({later.time.strftime('%H:%M')})"
                 )
 
         return "\n".join(lines)
