@@ -74,6 +74,7 @@ if st.button("Add pet"):
     owner.add_pet(
         Pet(name=new_pet_name, species=new_pet_species, breed=new_pet_breed)
     )
+    st.success(f"Added {new_pet_name} ({new_pet_species}) to {owner.name}'s pets.")
 
 if not owner.pets:
     st.info("No pets yet. Add one above to start scheduling tasks.")
@@ -132,31 +133,74 @@ if st.button("Add task"):
             latest=latest,
         )
     )
+    st.success(f"Added “{task_title}” for {pet.name}.")
+
+
+def _task_row(t):
+    """Render a Task as a display-friendly dict for st.table."""
+    return {
+        "title": t.description,
+        "duration (min)": t.duration_minutes,
+        "priority": t.priority,
+        "frequency": (
+            f"weekly ({WEEKDAYS[t.due_weekday]})"
+            if t.frequency == "weekly" and t.due_weekday is not None
+            else t.frequency
+        ),
+        "window": (
+            f"{t.earliest.strftime('%H:%M')}–{t.latest.strftime('%H:%M')}"
+            if t.earliest and t.latest
+            else "any"
+        ),
+        "completed": "✅" if t.completed else "—",
+    }
+
+
+# A scheduler over the persisted owner powers all the sorting/filtering below.
+# available_minutes is only used by generate_daily_plan(), so a placeholder is
+# fine for these read-only views.
+view = Scheduler(owner, available_minutes=120)
 
 tasks = pet.get_tasks()
 if tasks:
-    st.write(f"Current tasks for {pet.name}:")
-    st.table(
-        [
-            {
-                "title": t.description,
-                "duration_minutes": t.duration_minutes,
-                "priority": t.priority,
-                "frequency": (
-                    f"weekly ({WEEKDAYS[t.due_weekday]})"
-                    if t.frequency == "weekly" and t.due_weekday is not None
-                    else t.frequency
-                ),
-                "window": (
-                    f"{t.earliest.strftime('%H:%M')}–{t.latest.strftime('%H:%M')}"
-                    if t.earliest and t.latest
-                    else "any"
-                ),
-                "completed": t.completed,
-            }
-            for t in tasks
-        ]
-    )
+    st.write(f"Current tasks for **{pet.name}**:")
+
+    # Filter + sort controls, backed directly by Scheduler methods.
+    ctrl1, ctrl2 = st.columns(2)
+    with ctrl1:
+        status_filter = st.selectbox(
+            "Show", ["all", "to-do", "completed"], key="task_status_filter"
+        )
+    with ctrl2:
+        sort_mode = st.selectbox(
+            "Sort by", ["priority (high→low)", "time of day"], key="task_sort_mode"
+        )
+
+    # filter_tasks() handles the pet-name + completion filtering for us.
+    completed = {"all": None, "to-do": False, "completed": True}[status_filter]
+    rows = view.filter_tasks(pet_name=pet.name, completed=completed)
+
+    # Reorder using the Scheduler's own sort keys (applied to just this subset).
+    order = view.sort_by_priority() if sort_mode.startswith("priority") else view.sort_by_time()
+    rank = {id(t): i for i, t in enumerate(order)}
+    rows.sort(key=lambda t: rank.get(id(t), len(rank)))
+
+    if rows:
+        st.table([_task_row(t) for t in rows])
+    else:
+        st.info(f"No {status_filter} tasks for {pet.name}.")
+
+    # Surface fixed-time clashes for today before a plan is even built.
+    conflicts = view.detect_conflicts(date.today())
+    if conflicts:
+        st.warning(
+            f"⚠️ {len(conflicts)} fixed-time conflict(s) today: "
+            + "; ".join(
+                f"“{a.description}” ({a.time.strftime('%H:%M')}) overlaps "
+                f"“{b.description}” ({b.time.strftime('%H:%M')})"
+                for a, b in conflicts
+            )
+        )
 else:
     st.info(f"No tasks yet for {pet.name}. Add one above.")
 
@@ -174,13 +218,12 @@ if st.button("Generate schedule"):
     today = date.today()
     plan = scheduler.generate_daily_plan(today)
 
-    # Lightweight, crash-proof conflict check: shows a warning if any tasks
-    # ended up scheduled at the same time, otherwise stays quiet.
-    warning = scheduler.conflict_warning()
-    if warning:
-        st.warning(warning)
-
     if plan:
+        used = sum(item.task.duration_minutes for item in plan)
+        st.success(
+            f"Scheduled {len(plan)} task(s) across {len(owner.pets)} pet(s) — "
+            f"using {used} of {int(available_minutes)} available minutes."
+        )
         st.write("Planned day:")
         st.table(
             [
@@ -188,12 +231,23 @@ if st.button("Generate schedule"):
                     "time": item.start_time.strftime("%H:%M"),
                     "pet": item.pet.name,
                     "task": item.task.description,
-                    "duration_minutes": item.task.duration_minutes,
+                    "duration (min)": item.task.duration_minutes,
                     "priority": item.task.priority,
+                    "type": "fixed" if item.task.time is not None else "flexible",
                 }
                 for item in plan
             ]
         )
     else:
         st.info("No tasks could be scheduled in the available time.")
-    st.text(scheduler.explain_plan())
+
+    # Lightweight, crash-proof conflict check: shows a warning if any tasks
+    # ended up scheduled at the same time, otherwise stays quiet.
+    warning = scheduler.conflict_warning()
+    if warning:
+        st.warning(warning)
+    elif plan:
+        st.success("✅ No time conflicts in the generated plan.")
+
+    with st.expander("Why this plan? (explanation)", expanded=False):
+        st.text(scheduler.explain_plan())

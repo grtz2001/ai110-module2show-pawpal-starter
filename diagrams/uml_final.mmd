@@ -1,0 +1,85 @@
+classDiagram
+    %% PawPal+ class diagram — four core classes
+    %% Keep this file updated so it matches your final implementation.
+
+    %% Task: a single activity — description, time, frequency, completion status.
+    %% A fixed `time` means it's anchored; time = None means the Scheduler places it.
+    class Task {
+        +str description
+        +time time
+        +str frequency
+        +bool completed
+        +int duration_minutes
+        +str priority
+        +int due_weekday
+        +time earliest
+        +time latest
+        +date due_date
+        +set completed_on
+        +mark_complete(day) None
+        +is_due_on(day) bool
+        +is_done_on(day) bool
+        +next_occurrence(on) Task
+        +edit(description, time, frequency, duration_minutes, priority, due_weekday, earliest, latest) None
+    }
+
+    %% Pet: pet details plus the list of tasks it needs.
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +float weight
+        +str notes
+        +list~Task~ tasks
+        +edit_info(name, breed, weight, notes) None
+        +add_task(task) None
+        +get_tasks() list~Task~
+    }
+
+    %% Owner: manages multiple pets and provides access to all their tasks.
+    class Owner {
+        +str name
+        +str email
+        +list~Pet~ pets
+        +dict preferences
+        +list~str~ shared_with
+        +add_pet(pet) None
+        +get_all_tasks() list~Task~
+        +share_with(person) None
+    }
+
+    %% Scheduler: the brain — retrieves, organizes, and plans tasks across pets.
+    class Scheduler {
+        +Owner owner
+        +int available_minutes
+        +date last_day
+        +list~PlannedItem~ last_plan
+        +sort_by_priority() list~Task~
+        +sort_by_time() list~Task~
+        +tasks_for_pet(pet) list~Task~
+        +filter_by_status(completed, day) list~Task~
+        +filter_tasks(pet_name, completed, day) list~Task~
+        +tasks_due_on(day) list~Task~
+        +detect_conflicts(day) list
+        +find_overlaps(plan) list
+        +conflict_warning() str
+        +complete_task(task, on) Task
+        +generate_daily_plan(day) list~PlannedItem~
+        +explain_plan() str
+    }
+
+    %% PlannedItem: one placed entry in a generated plan (helper record).
+    class PlannedItem {
+        +Task task
+        +Pet pet
+        +time start_time
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : needs
+    Scheduler "1" --> "1" Owner : plans for
+    Scheduler ..> Task : organizes
+    Scheduler ..> PlannedItem : produces
+    PlannedItem --> Task : places
+    PlannedItem --> Pet : for
