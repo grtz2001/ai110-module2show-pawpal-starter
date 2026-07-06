@@ -60,19 +60,49 @@ Paste a sample of your app's CLI or Streamlit output here so a reader can see wh
 
 ## 🧪 Testing PawPal+
 
-```bash
-# Run the full test suite:
-pytest
+Run the full test suite from the project root:
 
-# Run with coverage:
-pytest --cov
+```bash
+python -m pytest
 ```
+
+The tests live in `tests/test_pawpal.py` and cover the scheduling behaviors that
+matter most, including both happy paths and edge cases:
+
+- **Sorting correctness** — tasks come back in chronological order
+  (`sort_by_time`) and high→low priority (`sort_by_priority`), with flexible
+  (no-time) tasks sorted last, a stable tie-break for equal priorities, and
+  unknown priorities pushed to the end.
+- **Recurrence logic** — completing a daily task retires today's occurrence and
+  spawns a fresh one due the next day; weekly tasks roll forward one week to the
+  same weekday; month boundaries roll over correctly; and the new occurrence has
+  its own independent completion history.
+- **Conflict detection** — overlapping fixed-time tasks are flagged, including
+  two tasks at the *exact same time* and three-way overlaps, while back-to-back
+  tasks are not; `find_overlaps` distinguishes same-pet from cross-pet clashes,
+  and `conflict_warning` never crashes on a malformed plan.
+- **Filtering** — by pet name (case-insensitive), completion status (per-day or
+  permanent), and both combined with AND.
+- **Planning & edge cases** — time-window (`earliest`/`latest`) handling, the
+  time budget running out, backfilling earlier gaps around late-window tasks,
+  and empty inputs (a pet with no tasks, an owner with no pets).
 
 Sample test output:
 
 ```
-# Paste your pytest output here
+(.venv) PS C:\Users\marit\OneDrive\Escritorio\ai110-module2show-pawpal-starter> python -m pytest
+================================================ test session starts ================================================
+platform win32 -- Python 3.14.5, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\marit\OneDrive\Escritorio\ai110-module2show-pawpal-starter
+plugins: anyio-4.14.1
+collected 48 items                                                                                                   
+
+tests\test_pawpal.py ................................................                                          [100%]
+
+================================================ 48 passed in 0.14s =================================================
 ```
+
+5-star confidence level
 
 ## 📐 Smarter Scheduling
 

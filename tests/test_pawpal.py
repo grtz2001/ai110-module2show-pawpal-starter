@@ -111,13 +111,14 @@ def test_flexible_task_skipped_if_it_cannot_finish_by_latest():
 
 def test_sort_by_time_orders_anchored_and_puts_flexible_last():
     """Fixed-time tasks come out earliest-first; flexible tasks sort last."""
-    flexible = Task(description="Play")
-    late = Task(description="Vet", time=time(15, 0))
-    early = Task(description="Walk", time=time(8, 0))
-    scheduler = _scheduler_with(flexible, late, early)
+    flexible = Task(description="Play")                 # no fixed time
+    late = Task(description="Vet", time=time(15, 0))     # afternoon
+    early = Task(description="Walk", time=time(8, 0))    # morning
+    scheduler = _scheduler_with(flexible, late, early)   # deliberately out of order
 
-    ordered = scheduler.sort_by_time()
+    ordered = scheduler.sort_by_time()                   # sort chronologically
 
+    # 08:00 before 15:00, and the timeless "Play" task lands last.
     assert ordered == [early, late, flexible]
 
 
@@ -208,17 +209,17 @@ def test_filter_tasks_no_filters_returns_everything():
 
 def test_completing_daily_task_spawns_next_occurrence():
     """Completing a daily task retires it and adds a fresh instance to the pet."""
-    task = Task(description="Morning walk", frequency="daily")
+    task = Task(description="Morning walk", frequency="daily")   # recurring daily
     scheduler = _scheduler_with(task)
     pet = scheduler.owner.pets[0]
 
-    upcoming = scheduler.complete_task(task, on=MONDAY)
+    upcoming = scheduler.complete_task(task, on=MONDAY)  # finish Monday's occurrence
 
     assert len(pet.tasks) == 2                 # original + next occurrence
     assert task.completed is True              # old occurrence retired
-    assert upcoming is not None
+    assert upcoming is not None                # a fresh task was returned
     assert upcoming.completed is False         # new occurrence is fresh
-    assert upcoming.description == "Morning walk"
+    assert upcoming.description == "Morning walk"   # same activity carried over
     assert upcoming.due_date == TUESDAY        # daily -> completion day + 1 day
 
 
@@ -391,3 +392,209 @@ def test_conflict_warning_returns_message_instead_of_crashing():
 
     assert isinstance(message, str)
     assert message.startswith("⚠️")
+
+
+# --- sorting tasks by priority ----------------------------------------------
+
+def test_sort_by_priority_orders_high_to_low():
+    """Tasks come out high -> medium -> low, not alphabetical."""
+    low = Task(description="low", priority="low")
+    high = Task(description="high", priority="high")
+    med = Task(description="med", priority="medium")
+    scheduler = _scheduler_with(low, high, med)
+
+    assert scheduler.sort_by_priority() == [high, med, low]
+
+
+def test_sort_by_priority_is_stable_for_equal_priority():
+    """Equal-priority tasks keep their original insertion order (stable sort)."""
+    first = Task(description="first", priority="high")
+    second = Task(description="second", priority="high")
+    scheduler = _scheduler_with(first, second)
+
+    assert scheduler.sort_by_priority() == [first, second]
+
+
+def test_sort_by_priority_puts_unknown_priority_last():
+    """An unrecognised priority sorts after all known ones (default rank)."""
+    urgent = Task(description="urgent", priority="urgent")  # not in PRIORITY_RANK
+    low = Task(description="low", priority="low")
+    scheduler = _scheduler_with(urgent, low)
+
+    assert scheduler.sort_by_priority() == [low, urgent]
+
+
+def test_sort_by_priority_empty_returns_empty():
+    """Sorting an owner with no tasks yields an empty list, not an error."""
+    scheduler = _scheduler_with()
+
+    assert scheduler.sort_by_priority() == []
+
+
+def test_sort_by_time_all_flexible_does_not_crash():
+    """When every task is flexible (time=None), sorting still works."""
+    a = Task(description="a")
+    b = Task(description="b")
+    scheduler = _scheduler_with(a, b)
+
+    assert scheduler.sort_by_time() == [a, b]
+
+
+def test_midnight_anchored_task_sorts_before_flexible():
+    """A task at exactly time(0, 0) is anchored, not treated as flexible."""
+    midnight = Task(description="Midnight meds", time=time(0, 0))
+    flexible = Task(description="Play")
+    scheduler = _scheduler_with(midnight, flexible)
+
+    # time(0, 0) is truthy in modern Python, so _minutes() is used (0), and the
+    # midnight task sorts ahead of the flexible one.
+    assert scheduler.sort_by_time() == [midnight, flexible]
+
+
+# --- conflict detection: exact-same-time and multi-way overlaps -------------
+
+def test_detect_conflicts_flags_tasks_at_the_exact_same_time():
+    """Two anchored tasks starting at the same minute are a conflict."""
+    a = Task(description="A", time=time(9, 0), duration_minutes=15)  # 09:00 slot
+    b = Task(description="B", time=time(9, 0), duration_minutes=15)  # same 09:00 slot
+    scheduler = _scheduler_with(a, b)
+
+    conflicts = scheduler.detect_conflicts(MONDAY)   # look for overlapping fixed times
+
+    # Identical start times overlap, so the pair is flagged (earlier task first).
+    assert conflicts == [(a, b)]
+
+
+def test_detect_conflicts_reports_all_pairs_in_a_three_way_overlap():
+    """Three mutually overlapping tasks yield all three pairs."""
+    a = Task(description="A", time=time(9, 0), duration_minutes=60)
+    b = Task(description="B", time=time(9, 15), duration_minutes=60)
+    c = Task(description="C", time=time(9, 30), duration_minutes=60)
+    scheduler = _scheduler_with(a, b, c)
+
+    conflicts = scheduler.detect_conflicts(MONDAY)
+
+    assert conflicts == [(a, b), (a, c), (b, c)]
+
+
+# --- recurrence edge cases: non-recurring and unowned tasks -----------------
+
+def test_completing_non_recurring_task_spawns_nothing():
+    """A task whose frequency isn't daily/weekly retires with no next occurrence."""
+    task = Task(description="One-off vet visit", frequency="once")
+    scheduler = _scheduler_with(task)
+    pet = scheduler.owner.pets[0]
+
+    result = scheduler.complete_task(task, on=MONDAY)
+
+    assert result is None
+    assert task.completed is True
+    assert len(pet.tasks) == 1     # nothing new attached
+
+
+def test_complete_task_on_unowned_task_returns_none_without_crashing():
+    """Completing a task no pet owns marks it done but attaches nothing."""
+    scheduler = _scheduler_with(Task(description="owned", frequency="daily"))
+    loose = Task(description="loose", frequency="daily")
+
+    result = scheduler.complete_task(loose, on=MONDAY)
+
+    assert result is None
+    assert loose.completed is True
+
+
+def test_pinned_task_is_not_due_before_its_due_date():
+    """A task pinned to a future due_date doesn't appear until that date."""
+    task = Task(description="Future meds", frequency="daily", due_date=TUESDAY)
+    scheduler = _scheduler_with(task)
+
+    assert scheduler.generate_daily_plan(MONDAY) == []          # before due_date
+    assert len(scheduler.generate_daily_plan(TUESDAY)) == 1     # on due_date
+
+
+def test_weekly_task_without_weekday_is_due_every_day():
+    """A weekly task with due_weekday=None falls back to daily-like recurrence."""
+    task = Task(description="Weekly-ish", frequency="weekly", due_weekday=None)
+    scheduler = _scheduler_with(task)
+
+    assert len(scheduler.generate_daily_plan(MONDAY)) == 1
+    assert len(scheduler.generate_daily_plan(TUESDAY)) == 1
+
+
+# --- empty scheduler / empty pet edge cases ---------------------------------
+
+def test_plan_for_pet_with_no_tasks_is_empty():
+    """A pet with no tasks contributes nothing and doesn't crash the planner."""
+    empty_pet = Pet(name="Ghost", species="fish")
+    owner = Owner(name="Jordan", email="j@example.com")
+    owner.add_pet(empty_pet)
+    scheduler = Scheduler(owner, available_minutes=480)
+
+    assert scheduler.generate_daily_plan(MONDAY) == []
+
+
+def test_plan_for_owner_with_no_pets_is_empty():
+    """An owner with no pets produces an empty plan."""
+    owner = Owner(name="Jordan", email="j@example.com")
+    scheduler = Scheduler(owner, available_minutes=480)
+
+    assert scheduler.generate_daily_plan(MONDAY) == []
+
+
+# --- time budget edge cases -------------------------------------------------
+
+def test_zero_budget_skips_flexible_but_still_places_anchored():
+    """With no flexible-time budget, fixed-time commitments are still scheduled."""
+    anchored = Task(description="Vet", time=time(9, 0))
+    flexible = Task(description="Play")
+    scheduler = _scheduler_with(anchored, flexible, available_minutes=0)
+
+    plan = scheduler.generate_daily_plan(MONDAY)
+
+    assert [i.task for i in plan] == [anchored]
+
+
+def test_flexible_tasks_stop_when_budget_runs_out():
+    """Highest-priority flexible tasks fill first; the rest are dropped."""
+    a = Task(description="A", duration_minutes=30, priority="high")
+    b = Task(description="B", duration_minutes=30, priority="medium")
+    c = Task(description="C", duration_minutes=30, priority="low")
+    scheduler = _scheduler_with(a, b, c, available_minutes=60)
+
+    plan = scheduler.generate_daily_plan(MONDAY)
+
+    assert [i.task for i in plan] == [a, b]   # c doesn't fit in 60 min
+
+
+def test_late_window_task_does_not_block_an_earlier_flexible_task():
+    """A high-priority late-window task is placed late; earlier gaps get backfilled."""
+    late = Task(description="Evening", duration_minutes=30,
+                earliest=time(18, 0), priority="high")
+    early = Task(description="Morning", duration_minutes=30, priority="low")
+    scheduler = _scheduler_with(late, early)
+
+    plan = scheduler.generate_daily_plan(MONDAY)
+    times = {i.task.description: i.start_time for i in plan}
+
+    # Even though the late task is processed first (higher priority), the early
+    # task still gets the 08:00 slot rather than being pushed after 18:00.
+    assert times["Evening"] == time(18, 0)
+    assert times["Morning"] == time(8, 0)
+
+
+# --- explain_plan state messages --------------------------------------------
+
+def test_explain_plan_before_any_plan_is_generated():
+    """explain_plan() nudges the caller to build a plan first."""
+    scheduler = _scheduler_with(Task(description="x"))
+
+    assert "No plan generated yet" in scheduler.explain_plan()
+
+
+def test_explain_plan_with_no_pets():
+    """After planning for an owner with no pets, explain_plan says so."""
+    owner = Owner(name="Jordan", email="j@example.com")
+    scheduler = Scheduler(owner, available_minutes=480)
+    scheduler.generate_daily_plan(MONDAY)
+
+    assert "no pets" in scheduler.explain_plan().lower()
