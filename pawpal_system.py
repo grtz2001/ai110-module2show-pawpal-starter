@@ -15,8 +15,8 @@ See diagrams/uml.mmd for the matching UML diagram.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, time
+from dataclasses import dataclass, field, replace
+from datetime import date, time, timedelta
 
 # Priority order for sorting tasks. Sorting the strings directly would give
 # alphabetical order (high < low < medium), which is wrong, so map to a rank.
@@ -76,6 +76,11 @@ class Task:
     # place it at or after ``earliest`` and finishing by ``latest``.
     earliest: time = None
     latest: time = None
+    # The specific date this occurrence is scheduled for. None means the task
+    # recurs by frequency/weekday alone (not pinned to a single date). When a
+    # task is completed, complete_task() spawns a fresh copy whose due_date is
+    # advanced by one interval (see next_occurrence).
+    due_date: date = None
     # Dates this task has been completed on. Recurring tasks reset each day
     # because a new day is simply a date not yet in this set.
     completed_on: set = field(default_factory=set)
@@ -93,7 +98,19 @@ class Task:
             self.completed_on.add(day)
 
     def is_due_on(self, day: date) -> bool:
-        """Whether this task should appear on ``day``, based on its frequency."""
+        """Whether this task should appear on ``day``.
+
+        If the task is pinned to a ``due_date`` (as spawned occurrences are), it
+        is not due before that date; on/after it, daily tasks are due every day
+        and weekly tasks only on their weekday. With no ``due_date`` the task
+        falls back to plain frequency/weekday recurrence.
+        """
+        if self.due_date is not None:
+            if day < self.due_date:
+                return False
+            if self.frequency == "weekly" and self.due_weekday is not None:
+                return day.weekday() == self.due_weekday
+            return True
         if self.frequency == "weekly":
             return self.due_weekday is None or day.weekday() == self.due_weekday
         return True  # daily (the default) is due every day
@@ -105,6 +122,25 @@ class Task:
         completion is tracked per-date so recurring tasks reset automatically.
         """
         return self.completed or day in self.completed_on
+
+    def next_occurrence(self, on: date):
+        """Return a fresh copy of this recurring task, due after ``on``.
+
+        ``on`` is the date the current occurrence was completed. A daily task's
+        next ``due_date`` is ``on + 1 day``; a weekly task's is ``on + 1 week``
+        (which lands on the same weekday). The copy keeps the same description,
+        time-of-day, duration, priority, frequency and weekday, but its
+        completion history is reset. Returns ``None`` for a non-recurring task.
+        """
+        if self.frequency == "daily":
+            step = timedelta(days=1)
+        elif self.frequency == "weekly":
+            step = timedelta(weeks=1)
+        else:
+            return None
+        # replace() copies every field; override completion state (a fresh set,
+        # not a shared reference) and pin the new occurrence to its next date.
+        return replace(self, completed=False, completed_on=set(), due_date=on + step)
 
     def edit(
         self,
@@ -260,6 +296,65 @@ class Scheduler:
 
         return [task for task in self.owner.get_all_tasks() if is_done(task) == completed]
 
+    def filter_tasks(self, pet_name: str = None, completed: bool = None,
+                     day: date = None) -> list:
+        """Return tasks across all pets, filtered by pet name and/or status.
+
+        - ``pet_name``: keep only tasks of the pet with this name
+          (case-insensitive). ``None`` means any pet.
+        - ``completed``: keep only tasks with this completion status. ``None``
+          means any status; judged per-day when ``day`` is given, otherwise by
+          the permanent ``completed`` flag.
+
+        Both filters are optional and combine with AND, so pass just one to
+        filter by completion status or pet name alone.
+        """
+        wanted_name = pet_name.lower() if pet_name is not None else None
+
+        results = []
+        for pet in self.owner.pets:
+            if wanted_name is not None and pet.name.lower() != wanted_name:
+                continue
+            for task in pet.tasks:
+                if completed is not None:
+                    is_done = task.is_done_on(day) if day is not None else task.completed
+                    if is_done != completed:
+                        continue
+                results.append(task)
+        return results
+
+    def complete_task(self, task: Task, on: date = None):
+        """Mark ``task`` done and roll a recurring task forward to next time.
+
+        The finished occurrence is retired (marked permanently complete so it is
+        never scheduled again). For a daily or weekly task, a fresh instance is
+        created via ``Task.next_occurrence`` and attached to the same pet. The
+        new instance's ``due_date`` is set to the next occurrence (``on + 1 day``
+        for daily, ``+ 1 week`` for weekly), so it does not re-appear on the day
+        just completed and becomes due on that next date.
+
+        Returns the newly created Task, or ``None`` if the task does not recur
+        (or isn't owned by any of this owner's pets).
+        """
+        if on is None:
+            on = date.today()
+
+        # Find the owning pet by identity (not equality — dataclasses compare by
+        # value, and two tasks could look identical).
+        pet = next(
+            (p for p in self.owner.pets if any(t is task for t in p.tasks)),
+            None,
+        )
+
+        task.mark_complete()  # retire this occurrence permanently
+
+        upcoming = task.next_occurrence(on)
+        if upcoming is None or pet is None:
+            return None
+
+        pet.add_task(upcoming)
+        return upcoming
+
     def tasks_due_on(self, day: date) -> list:
         """Return the still-to-do tasks that should happen on ``day``.
 
@@ -298,6 +393,68 @@ class Scheduler:
                 else:
                     break  # sorted by time, so no further task can overlap `earlier`
         return conflicts
+
+    def find_overlaps(self, plan: list = None) -> list:
+        """Find pairs in a generated plan whose scheduled time slots overlap.
+
+        Unlike ``detect_conflicts`` (which looks at declared fixed times before
+        planning), this inspects the *actual* schedule, so it catches any two
+        placed tasks sharing clock time — whether they belong to the same pet or
+        to different pets. Uses ``self.last_plan`` when ``plan`` is omitted.
+
+        Two items overlap when one starts before the other ends. Returns a list
+        of ``(item_a, item_b, same_pet)`` tuples, earliest item first, where
+        ``same_pet`` is True if both belong to the same pet (a hard clash the
+        owner physically can't do at once) and False for a cross-pet collision.
+        """
+        if plan is None:
+            plan = self.last_plan
+        items = sorted(plan, key=lambda item: item.start_time)
+
+        overlaps = []
+        for i, earlier in enumerate(items):
+            earlier_end = _minutes(earlier.start_time) + earlier.task.duration_minutes
+            for later in items[i + 1:]:
+                if _minutes(later.start_time) < earlier_end:
+                    overlaps.append((earlier, later, earlier.pet is later.pet))
+                else:
+                    break  # sorted by start time, so nothing later can overlap
+        return overlaps
+
+    def conflict_warning(self) -> str:
+        """Lightweight, crash-proof conflict check that returns a message.
+
+        A convenience wrapper over ``find_overlaps`` for callers (like the UI)
+        that just want something to show the user. It returns:
+
+        * an empty string when there are no conflicts,
+        * otherwise a one-line human-readable warning listing each clash.
+
+        Unlike ``find_overlaps``, this never raises — if anything unexpected
+        goes wrong (e.g. a malformed plan entry), it reports that as a warning
+        string so the program keeps running instead of crashing.
+        """
+        try:
+            overlaps = self.find_overlaps()
+            if not overlaps:
+                return ""
+
+            parts = []
+            for earlier, later, same_pet in overlaps:
+                who = (
+                    f"both for {earlier.pet.name}"
+                    if same_pet
+                    else f"{earlier.pet.name} & {later.pet.name}"
+                )
+                parts.append(
+                    f"{earlier.start_time.strftime('%H:%M')} "
+                    f"{earlier.task.description} vs "
+                    f"{later.start_time.strftime('%H:%M')} "
+                    f"{later.task.description} ({who})"
+                )
+            return f"⚠️ {len(overlaps)} time conflict(s): " + "; ".join(parts)
+        except Exception as exc:  # never let a conflict check crash the caller
+            return f"⚠️ Could not check for conflicts ({exc})."
 
     def generate_daily_plan(self, day: date) -> list:
         """Build a timed plan across all pets for the given day.
@@ -410,17 +567,21 @@ class Scheduler:
                     f"({task.duration_minutes} min, {task.priority} priority)"
                 )
 
-        # Warn about fixed-time tasks that overlap — both were placed anyway.
-        conflicts = self.detect_conflicts(self.last_day)
-        if conflicts:
-            pet_of = self._pet_by_task()
-            lines.append("Time conflicts (fixed-time tasks that overlap):")
-            for earlier, later in conflicts:
+        # Warn about tasks scheduled at overlapping times (both placed anyway),
+        # flagging whether the clash is for one pet or spans different pets.
+        overlaps = self.find_overlaps()
+        if overlaps:
+            lines.append("Time conflicts (tasks scheduled at the same time):")
+            for earlier, later, same_pet in overlaps:
+                who = (
+                    f"same pet ({earlier.pet.name})"
+                    if same_pet
+                    else f"{earlier.pet.name} vs {later.pet.name}"
+                )
                 lines.append(
-                    f"  - [{pet_of[id(earlier)].name}] {earlier.description} "
-                    f"({earlier.time.strftime('%H:%M')}) overlaps "
-                    f"[{pet_of[id(later)].name}] {later.description} "
-                    f"({later.time.strftime('%H:%M')})"
+                    f"  - {earlier.start_time.strftime('%H:%M')} {earlier.task.description} "
+                    f"overlaps {later.start_time.strftime('%H:%M')} {later.task.description} "
+                    f"[{who}]"
                 )
 
         return "\n".join(lines)

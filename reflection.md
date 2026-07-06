@@ -44,7 +44,12 @@ Yes — the biggest change was collapsing the design from six classes down to fo
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
+
+My scheduler places flexible tasks **greedily, highest-priority-first, into the earliest free slot that fits** (`generate_daily_plan` sorts by priority, then `_next_free_slot` returns the first non-overlapping gap). It does *not* search for a globally optimal arrangement of the day. This means a high-priority task placed early can fragment the timeline so that two lower-priority tasks which *would* have fit together end up skipped when the time budget runs out — a bin-packing problem I deliberately don't solve. A related, smaller tradeoff: `_next_free_slot` re-sorts the `blocked` interval list on every call (O(n² log n) overall) instead of maintaining a sorted structure.
+
 - Why is that tradeoff reasonable for this scenario?
+
+For a single owner's daily pet care, the task count is tiny (a handful per pet), so the cost of both the greedy choice and the repeated sort is negligible in wall-clock terms. More importantly, greedy-by-priority is *predictable and explainable*: it mirrors how a person actually plans a day ("do the important things first, fit the rest around them"), which is exactly what `explain_plan` needs to justify to the user. A true optimizer might pack more tasks in but produce a schedule the owner finds arbitrary and can't reason about. Choosing readability and predictable, human-legible behavior over optimality is the right call for this scenario.
 
 ---
 

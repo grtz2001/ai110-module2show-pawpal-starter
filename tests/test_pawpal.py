@@ -2,7 +2,7 @@
 
 from datetime import date, time
 
-from pawpal_system import Owner, Pet, Scheduler, Task
+from pawpal_system import Owner, Pet, PlannedItem, Scheduler, Task
 
 
 def test_mark_complete_changes_status():
@@ -154,6 +154,136 @@ def test_filter_by_status_separates_done_and_pending():
     assert scheduler.filter_by_status(completed=False) == [done_today, pending]
 
 
+def _two_pet_scheduler():
+    """Owner with Rex (walk done today, feed pending) and Milo (one pending)."""
+    rex = Pet(name="Rex", species="dog")
+    milo = Pet(name="Milo", species="cat")
+    rex_walk = Task(description="Walk Rex")
+    rex_feed = Task(description="Feed Rex")
+    milo_feed = Task(description="Feed Milo")
+    rex.add_task(rex_walk)
+    rex.add_task(rex_feed)
+    milo.add_task(milo_feed)
+    owner = Owner(name="Jordan", email="j@example.com")
+    owner.add_pet(rex)
+    owner.add_pet(milo)
+    scheduler = Scheduler(owner, available_minutes=480)
+    return scheduler, rex_walk, rex_feed, milo_feed
+
+
+def test_filter_tasks_by_pet_name_is_case_insensitive():
+    """Filtering by pet name returns only that pet's tasks, ignoring case."""
+    scheduler, rex_walk, rex_feed, _ = _two_pet_scheduler()
+
+    assert scheduler.filter_tasks(pet_name="rex") == [rex_walk, rex_feed]
+
+
+def test_filter_tasks_by_status():
+    """Filtering by completion status uses per-day status when a day is given."""
+    scheduler, rex_walk, rex_feed, milo_feed = _two_pet_scheduler()
+
+    rex_walk.mark_complete(MONDAY)
+
+    assert scheduler.filter_tasks(completed=True, day=MONDAY) == [rex_walk]
+    assert scheduler.filter_tasks(completed=False, day=MONDAY) == [rex_feed, milo_feed]
+
+
+def test_filter_tasks_by_pet_and_status_combined():
+    """Both filters combine with AND."""
+    scheduler, rex_walk, rex_feed, _ = _two_pet_scheduler()
+
+    rex_walk.mark_complete(MONDAY)
+
+    assert scheduler.filter_tasks(pet_name="Rex", completed=False, day=MONDAY) == [rex_feed]
+
+
+def test_filter_tasks_no_filters_returns_everything():
+    """With no filters, every task across all pets is returned."""
+    scheduler, rex_walk, rex_feed, milo_feed = _two_pet_scheduler()
+
+    assert scheduler.filter_tasks() == [rex_walk, rex_feed, milo_feed]
+
+
+# --- auto-recurrence: completing a task spawns its next occurrence ----------
+
+def test_completing_daily_task_spawns_next_occurrence():
+    """Completing a daily task retires it and adds a fresh instance to the pet."""
+    task = Task(description="Morning walk", frequency="daily")
+    scheduler = _scheduler_with(task)
+    pet = scheduler.owner.pets[0]
+
+    upcoming = scheduler.complete_task(task, on=MONDAY)
+
+    assert len(pet.tasks) == 2                 # original + next occurrence
+    assert task.completed is True              # old occurrence retired
+    assert upcoming is not None
+    assert upcoming.completed is False         # new occurrence is fresh
+    assert upcoming.description == "Morning walk"
+    assert upcoming.due_date == TUESDAY        # daily -> completion day + 1 day
+
+
+def test_daily_next_occurrence_due_date_uses_timedelta():
+    """A daily task completed late in the month rolls over the month boundary."""
+    task = Task(description="Nightly meds", frequency="daily")
+    scheduler = _scheduler_with(task)
+
+    end_of_month = date(2026, 7, 31)
+    upcoming = scheduler.complete_task(task, on=end_of_month)
+
+    assert upcoming.due_date == date(2026, 8, 1)   # timedelta handles rollover
+
+
+def test_weekly_next_occurrence_due_date_is_one_week_later():
+    """A completed weekly task's next due_date is exactly seven days on."""
+    task = Task(description="Weekly grooming", frequency="weekly", due_weekday=0)
+    scheduler = _scheduler_with(task)
+
+    upcoming = scheduler.complete_task(task, on=MONDAY)
+
+    assert upcoming.due_date == date(2026, 7, 13)  # MONDAY + 1 week
+
+
+def test_next_occurrence_is_not_rescheduled_same_day_but_is_next_day():
+    """The spawned instance appears on the next day, not the day just completed."""
+    task = Task(description="Feed breakfast", frequency="daily")
+    scheduler = _scheduler_with(task)
+
+    scheduler.complete_task(task, on=MONDAY)
+
+    # Monday: original is done and the new instance is pre-marked done for Monday.
+    assert scheduler.generate_daily_plan(MONDAY) == []
+    # Tuesday: exactly one occurrence is due (the spawned instance, no duplicate).
+    tuesday = scheduler.generate_daily_plan(TUESDAY)
+    assert len(tuesday) == 1
+    assert tuesday[0].task.description == "Feed breakfast"
+
+
+def test_weekly_next_occurrence_keeps_its_weekday():
+    """A completed weekly task rolls forward to the same weekday next week."""
+    task = Task(description="Weekly grooming", frequency="weekly", due_weekday=0)
+    scheduler = _scheduler_with(task)
+
+    upcoming = scheduler.complete_task(task, on=MONDAY)
+
+    assert upcoming.frequency == "weekly"
+    assert upcoming.due_weekday == 0
+    # Not due the day after (Tuesday); due again the following Monday.
+    assert scheduler.generate_daily_plan(TUESDAY) == []
+    next_monday = date(2026, 7, 13)
+    assert len(scheduler.generate_daily_plan(next_monday)) == 1
+
+
+def test_next_occurrence_has_independent_completion_history():
+    """The clone must not share the original's completed_on set."""
+    task = Task(description="Meds", frequency="daily")
+    scheduler = _scheduler_with(task)
+
+    upcoming = scheduler.complete_task(task, on=MONDAY)
+    upcoming.completed_on.add(TUESDAY)
+
+    assert TUESDAY not in task.completed_on    # sets are independent
+
+
 # --- basic conflict detection -----------------------------------------------
 
 def test_detect_conflicts_finds_overlapping_fixed_time_tasks():
@@ -174,3 +304,90 @@ def test_detect_conflicts_ignores_back_to_back_tasks():
     scheduler = _scheduler_with(walk, feed)
 
     assert scheduler.detect_conflicts(MONDAY) == []
+
+
+# --- find_overlaps: same-time tasks in the generated plan -------------------
+
+def test_find_overlaps_flags_same_pet_clash():
+    """Two overlapping tasks for one pet are reported as a same-pet clash."""
+    vet = Task(description="Vet", time=time(15, 0), duration_minutes=45)
+    grooming = Task(description="Grooming", time=time(15, 30), duration_minutes=30)
+    scheduler = _scheduler_with(vet, grooming)
+    scheduler.generate_daily_plan(MONDAY)
+
+    overlaps = scheduler.find_overlaps()
+
+    assert len(overlaps) == 1
+    earlier, later, same_pet = overlaps[0]
+    assert earlier.task is vet and later.task is grooming
+    assert same_pet is True
+
+
+def test_find_overlaps_flags_cross_pet_clash():
+    """Overlapping tasks belonging to different pets are flagged same_pet=False."""
+    rex = Pet(name="Rex", species="dog")
+    milo = Pet(name="Milo", species="cat")
+    rex.add_task(Task(description="Walk Rex", time=time(8, 0), duration_minutes=30))
+    milo.add_task(Task(description="Feed Milo", time=time(8, 15), duration_minutes=10))
+    owner = Owner(name="Jordan", email="j@example.com")
+    owner.add_pet(rex)
+    owner.add_pet(milo)
+    scheduler = Scheduler(owner, available_minutes=480)
+    scheduler.generate_daily_plan(MONDAY)
+
+    overlaps = scheduler.find_overlaps()
+
+    assert len(overlaps) == 1
+    _, _, same_pet = overlaps[0]
+    assert same_pet is False
+
+
+def test_find_overlaps_empty_when_nothing_collides():
+    """A plan with only back-to-back tasks has no overlaps."""
+    walk = Task(description="Walk", time=time(8, 0), duration_minutes=30)
+    feed = Task(description="Feed", time=time(8, 30), duration_minutes=15)
+    scheduler = _scheduler_with(walk, feed)
+    scheduler.generate_daily_plan(MONDAY)
+
+    assert scheduler.find_overlaps() == []
+
+
+# --- lightweight, crash-proof conflict warning ------------------------------
+
+def test_conflict_warning_empty_when_no_conflicts():
+    """No conflicts -> empty string (nothing to show the user)."""
+    walk = Task(description="Walk", time=time(8, 0), duration_minutes=30)
+    scheduler = _scheduler_with(walk)
+    scheduler.generate_daily_plan(MONDAY)
+
+    assert scheduler.conflict_warning() == ""
+
+
+def test_conflict_warning_describes_conflicts():
+    """A conflict yields a human-readable warning string."""
+    vet = Task(description="Vet", time=time(15, 0), duration_minutes=45)
+    grooming = Task(description="Grooming", time=time(15, 30), duration_minutes=30)
+    scheduler = _scheduler_with(vet, grooming)
+    scheduler.generate_daily_plan(MONDAY)
+
+    message = scheduler.conflict_warning()
+
+    assert "conflict" in message.lower()
+    assert "Vet" in message and "Grooming" in message
+
+
+def test_conflict_warning_returns_message_instead_of_crashing():
+    """A malformed plan entry is reported as a warning, not raised."""
+    scheduler = _scheduler_with(Task(description="x"))
+    pet = scheduler.owner.pets[0]
+    # Two entries with no start_time would crash a naive check; conflict_warning
+    # must swallow it and hand back a string.
+    scheduler.last_plan = [
+        PlannedItem(task=Task(description="A"), pet=pet, start_time=None),
+        PlannedItem(task=Task(description="B"), pet=pet, start_time=None),
+    ]
+
+    message = scheduler.conflict_warning()
+
+    assert isinstance(message, str)
+    assert message.startswith("⚠️")

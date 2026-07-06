@@ -76,14 +76,68 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
+All scheduling logic lives in `pawpal_system.py`. The table summarizes each
+feature and the method that implements it; details follow below.
 
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.sort_by_priority()`, `Scheduler.sort_by_time()` | High→low priority (via `PRIORITY_RANK`), or by fixed time of day with flexible tasks last |
+| Filtering | `Scheduler.filter_tasks()`, `Scheduler.filter_by_status()`, `Scheduler.tasks_for_pet()`, `Scheduler.tasks_due_on()` | By pet name (case-insensitive), completion status, or due-on-a-day; filters combine with AND |
+| Conflict handling | `Scheduler.detect_conflicts()`, `Scheduler.find_overlaps()`, `Scheduler.conflict_warning()` | Overlapping time slots, detected on declared times *and* on the actual generated plan |
+| Recurring tasks | `Task.is_due_on()`, `Task.next_occurrence()`, `Scheduler.complete_task()` | Daily/weekly recurrence with per-day completion; completing a task spawns the next occurrence |
+
+### Sorting behavior
+
+- **`Scheduler.sort_by_priority()`** returns every task across all pets ordered
+  high → low priority. Priority strings are mapped through `PRIORITY_RANK`
+  (`high=0, medium=1, low=2`) because sorting the strings directly would give
+  the wrong (alphabetical) order. The sort is stable, so equal-priority tasks
+  keep their original order.
+- **`Scheduler.sort_by_time()`** orders tasks by their fixed time of day,
+  earliest first. Flexible tasks (`time is None`) have no anchored slot, so they
+  sort after all fixed-time tasks.
+
+### Filtering behavior
+
+- **`Scheduler.filter_tasks(pet_name, completed, day)`** is the general filter:
+  keep tasks by pet name (case-insensitive), by completion status, or both. The
+  filters combine with AND, and completion is judged per-day when a `day` is
+  given, otherwise by the permanent `completed` flag.
+- **`Scheduler.filter_by_status(completed, day)`** filters all tasks by
+  completion status alone.
+- **`Scheduler.tasks_for_pet(pet)`** returns just one pet's tasks.
+- **`Scheduler.tasks_due_on(day)`** returns the still-to-do tasks that should
+  happen on a given day (recurrence-aware and skipping ones already done).
+
+### Conflict detection logic
+
+- **`Scheduler.detect_conflicts(day)`** finds pairs of *fixed-time* tasks whose
+  declared slots overlap, before any planning happens. It sorts anchored tasks
+  by time and, for each, compares against later tasks until one starts after the
+  current one ends (the sort lets it stop early). Returns `(task_a, task_b)`
+  pairs.
+- **`Scheduler.find_overlaps(plan)`** inspects the *actual* generated plan
+  (`self.last_plan` by default), so it catches any two placed tasks sharing
+  clock time — including flexible tasks and cross-pet clashes. Returns
+  `(item_a, item_b, same_pet)` tuples, where `same_pet` flags a hard, physically
+  impossible clash for one pet versus a cross-pet collision.
+- **`Scheduler.conflict_warning()`** is a crash-proof wrapper over
+  `find_overlaps()` that returns a human-readable one-line warning (or an empty
+  string), for the UI to display.
+
+### Recurring task logic
+
+- **`Task.is_due_on(day)`** decides whether a task appears on a given day. A task
+  pinned to a `due_date` isn't due before it; daily tasks are due every day and
+  weekly tasks only on their `due_weekday`. Completion is tracked per-day in
+  `completed_on`, so recurring tasks reset automatically each new day.
+- **`Task.next_occurrence(on)`** returns a fresh copy of a recurring task with a
+  reset completion history and its `due_date` advanced by one interval
+  (`on + 1 day` for daily, `+ 1 week` for weekly). Non-recurring tasks return
+  `None`.
+- **`Scheduler.complete_task(task, on)`** ties it together: it retires the
+  finished occurrence and, for a daily/weekly task, attaches the next occurrence
+  to the same pet so the schedule rolls forward automatically.
 
 ## 📸 Demo Walkthrough
 

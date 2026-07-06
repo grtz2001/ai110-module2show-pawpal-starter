@@ -14,10 +14,12 @@ classDiagram
         +int due_weekday
         +time earliest
         +time latest
+        +date due_date
         +set completed_on
         +mark_complete(day) None
         +is_due_on(day) bool
         +is_done_on(day) bool
+        +next_occurrence() Task
         +edit(description, time, frequency, duration_minutes, priority, due_weekday, earliest, latest) None
     }
 
@@ -55,8 +57,12 @@ classDiagram
         +sort_by_time() list~Task~
         +tasks_for_pet(pet) list~Task~
         +filter_by_status(completed, day) list~Task~
+        +filter_tasks(pet_name, completed, day) list~Task~
         +tasks_due_on(day) list~Task~
         +detect_conflicts(day) list
+        +find_overlaps(plan) list
+        +conflict_warning() str
+        +complete_task(task, on) Task
         +generate_daily_plan(day) list~PlannedItem~
         +explain_plan() str
     }

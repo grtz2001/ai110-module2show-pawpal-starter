@@ -174,14 +174,11 @@ if st.button("Generate schedule"):
     today = date.today()
     plan = scheduler.generate_daily_plan(today)
 
-    # Flag any overlapping fixed-time commitments before showing the plan.
-    conflicts = scheduler.detect_conflicts(today)
-    for earlier, later in conflicts:
-        st.warning(
-            f"⚠️ Time conflict: “{earlier.description}” "
-            f"({earlier.time.strftime('%H:%M')}) overlaps "
-            f"“{later.description}” ({later.time.strftime('%H:%M')})."
-        )
+    # Lightweight, crash-proof conflict check: shows a warning if any tasks
+    # ended up scheduled at the same time, otherwise stays quiet.
+    warning = scheduler.conflict_warning()
+    if warning:
+        st.warning(warning)
 
     if plan:
         st.write("Planned day:")
