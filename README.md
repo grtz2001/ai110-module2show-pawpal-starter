@@ -171,12 +171,59 @@ feature and the method that implements it; details follow below.
 
 ## 📸 Demo Walkthrough
 
-Describe your app in numbered steps so a reader can follow along without watching a video:
-
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+1. **Set up the owner.** Enter the owner's name and email at the top. PawPal+ persists this owner in the session, so pets and tasks you add stick around across reruns.
+2. **Add a pet.** Fill in the pet's name, species, and breed, then click **Add pet**. A success message confirms it, and each pet is attached to the owner via `owner.add_pet(...)`. Add as many pets as you like.
+3. **Add care tasks.** Pick which pet the task is for, then enter a title, duration, and priority. Choose **daily** or **weekly** (weekly tasks let you pick a weekday), and optionally restrict the task to a time window (e.g. only between 08:00–20:00).
+4. **Review and organize the task list.** The current tasks appear in a table you can **filter** (all / to-do / completed) and **sort** (by priority or time of day) — both powered by the `Scheduler`. If two fixed-time tasks would clash today, a warning appears before you even build a plan.
+5. **Generate the daily schedule.** Set how many minutes of care time you have, then click **Generate schedule**. The `Scheduler` places fixed-time tasks first, then fits flexible tasks highest-priority-first into the remaining budget.
+6. **Read the results.** A success banner summarizes tasks scheduled and minutes used. The plan is shown as a timed table (with a fixed/flexible tag per task), any time conflicts are flagged, and an expandable "Why this plan?" section explains each choice and lists anything left out. 
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
+
+**CLI output from running main.py** *here is the block*
+(.venv) PS C:\Users\marit\OneDrive\Escritorio\ai110-module2show-pawpal-starter> python .\main.py
+
+Sorted by TIME (anchored earliest-first, flexible last):
+     08:30  Morning walk           30m  high    daily
+     09:00  Feed breakfast         10m  medium  daily
+     15:00  Vet appointment        45m  high    daily
+     15:00  Medication             15m  high    daily
+  flexible  Play / enrichment      20m  low     daily
+
+Sorted by PRIORITY (high -> low):
+     15:00  Vet appointment        45m  high    daily
+     08:30  Morning walk           30m  high    daily
+     15:00  Medication             15m  high    daily
+     09:00  Feed breakfast         10m  medium  daily
+  flexible  Play / enrichment      20m  low     daily
+
+Filter by PET NAME = 'Milo':
+  flexible  Play / enrichment      20m  low     daily
+     09:00  Feed breakfast         10m  medium  daily
+     15:00  Medication             15m  high    daily
+
+Filter by STATUS: completed today:
+     08:30  Morning walk           30m  high    daily
+
+Filter by STATUS: still to do today:
+     15:00  Vet appointment        45m  high    daily
+  flexible  Play / enrichment      20m  low     daily
+     09:00  Feed breakfast         10m  medium  daily
+     15:00  Medication             15m  high    daily
+
+Conflict detection (tasks scheduled at the same time):
+  ⚠️ 1 time conflict(s): 15:00 Vet appointment vs 15:00 Medication (Rex & Milo)
+
+========================================================
+  TODAY'S SCHEDULE - Monday, Jul 06
+  Maria's pets - 4 tasks, 90 of 480 min used
+========================================================
+  TIME    PET       TASK                   DUR  PRIORITY
+  ------  --------  --------------------  ----  --------
+  08:00   Milo      Play / enrichment      20m  low
+  09:00   Milo      Feed breakfast         10m  medium
+  15:00   Rex       Vet appointment        45m  high
+  15:00   Milo      Medication             15m  high
+========================================================
+(.venv) PS C:\Users\marit\OneDrive\Escritorio\ai110-module2show-pawpal-starter> 
+ 
