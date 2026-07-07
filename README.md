@@ -180,7 +180,7 @@ feature and the method that implements it; details follow below.
 5. **Generate the daily schedule.** Set how many minutes of care time you have, then click **Generate schedule**. The `Scheduler` places fixed-time tasks first, then fits flexible tasks highest-priority-first into the remaining budget.
 6. **Read the results.** A success banner summarizes tasks scheduled and minutes used. The plan is shown as a timed table (with a fixed/flexible tag per task), any time conflicts are flagged, and an expandable "Why this plan?" section explains each choice and lists anything left out. 
 
-**Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
+**Screenshot or video** *(optional)*: https://imgur.com/a/GRmPJyM
 
 **CLI output from running main.py** *here is the block*
 ```
