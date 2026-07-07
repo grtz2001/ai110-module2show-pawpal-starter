@@ -46,6 +46,7 @@ pip install -r requirements.txt
 
 Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
 
+```
 ========================================================
   TODAY'S SCHEDULE - Sunday, Jul 05
   Maria's pets - 4 tasks, 105 of 480 min used
@@ -57,6 +58,7 @@ Paste a sample of your app's CLI or Streamlit output here so a reader can see wh
   09:00   Milo      Feed breakfast         10m  medium
   15:00   Rex       Vet appointment        45m  high
 ========================================================
+```
 
 ## 🧪 Testing PawPal+
 
@@ -181,6 +183,7 @@ feature and the method that implements it; details follow below.
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
 
 **CLI output from running main.py** *here is the block*
+```
 (.venv) PS C:\Users\marit\OneDrive\Escritorio\ai110-module2show-pawpal-starter> python .\main.py
 
 Sorted by TIME (anchored earliest-first, flexible last):
@@ -226,4 +229,4 @@ Conflict detection (tasks scheduled at the same time):
   15:00   Milo      Medication             15m  high
 ========================================================
 (.venv) PS C:\Users\marit\OneDrive\Escritorio\ai110-module2show-pawpal-starter> 
- 
+ ```
